@@ -814,12 +814,44 @@ end MessagesUpTo
 
 namespace Messages
 
-/-- Derive the transcript up to round `k` from the (full) messages, via querying the
-    state-restoration / Fiat-Shamir oracle for the challenges. -/
+/-- Auxiliary recursion for `deriveTranscriptSR`, at full protocol length.
+
+This makes exactly the same queries in the same order as
+`MessagesUpTo.deriveTranscriptSRAux stmt (Fin.last n) messages`, but is spelled so that goals
+mentioning its unfolded body are type-correct at `instances` transparency, which the latter is not —
+so `rw`/`simp`/`conv` can be used on it. Three differences, each removing one obstruction:
+
+* recursion on a plain `j : ℕ` with `j ≤ n`, so the base case's index is the literal `Fin 0` rather
+  than `↑(Fin.castLE _ 0)`;
+* full length and the *unsliced* `MessageIdx`, so a direction proof at `pSpec.dir` is the proof the
+  message lookup wants — no `pSpec⟦:k⟧.dir` to reconcile;
+* the challenge query's `take` index spelled as literally `c.1.castSucc`, the expression the oracle
+  domain demands, so the two agree syntactically rather than up to `whnf`. `Messages.take` is what
+  makes this possible: unlike `MessagesUpTo.take` it returns `MessagesUpTo j` at the index given,
+  with no `Fin.castLE` wrapped around it.
+
+Without this, nothing about the state-restoration transcript derivation can be proved by tactic. -/
+def deriveTranscriptSRAux {ι : Type} {oSpec : OracleSpec ι} {StmtIn : Type}
+    (stmt : StmtIn) (messages : pSpec.Messages) :
+    (j : ℕ) → (hj : j ≤ n) → OracleComp (oSpec + srChallengeOracle StmtIn pSpec)
+      ((i : Fin j) → pSpec.«Type» ⟨i.val, Nat.lt_of_lt_of_le i.isLt hj⟩)
+  | 0, _ => pure (fun i => i.elim0)
+  | (j + 1), hj => do
+      let prev ← deriveTranscriptSRAux stmt messages j (Nat.le_of_succ_le hj)
+      match hDir : pSpec.dir ⟨j, hj⟩ with
+      | .V_to_P =>
+          let c ← query (spec := srChallengeOracle StmtIn pSpec)
+            ⟨⟨⟨j, hj⟩, hDir⟩,
+              (stmt, messages.take (⟨⟨j, hj⟩, hDir⟩ : pSpec.ChallengeIdx).1.castSucc)⟩
+          pure (Fin.snoc prev c)
+      | .P_to_V => pure (Fin.snoc prev (messages ⟨⟨j, hj⟩, hDir⟩))
+
+/-- Derive the full transcript from the (full) messages, via querying the state-restoration /
+    Fiat-Shamir oracle for the challenges. -/
 def deriveTranscriptSR {ι : Type} {oSpec : OracleSpec ι} {StmtIn : Type}
     (stmt : StmtIn) (messages : pSpec.Messages) :
-    OracleComp (oSpec + fsChallengeOracle StmtIn pSpec) pSpec.FullTranscript := do
-  MessagesUpTo.deriveTranscriptSR stmt (Fin.last n) messages
+    OracleComp (oSpec + srChallengeOracle StmtIn pSpec) pSpec.FullTranscript :=
+  (fun tr i => tr i) <$> deriveTranscriptSRAux stmt messages n le_rfl
 
 alias deriveTranscriptFS := deriveTranscriptSR
 
